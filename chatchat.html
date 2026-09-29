@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f6fed">
+<title>채팅</title>
+<style>
+  :root {
+    --bg: #eef1f4; --panel: #ffffff; --ink: #1d2733; --sub: #7b8794;
+    --line: #dde2e8; --accent: #2f6fed; --bubble: #f3f5f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14181d; --panel: #1c222a; --ink: #e6ebf0; --sub: #8b97a4;
+            --line: #2b333d; --accent: #5b92ff; --bubble: #252c35; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; height: 100dvh; margin: 0; overflow: hidden; }
+  body { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    display: flex; justify-content: center;
+  }
+  .app {
+    width: 100%; max-width: 640px; height: 100%; height: 100dvh;
+    background: var(--panel); display: flex; flex-direction: column;
+    border-left: 1px solid var(--line); border-right: 1px solid var(--line);
+  }
+  header { display: flex; align-items: center; gap: 12px; padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 14px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  header input {
+    width: 130px; padding: 8px 10px; font: inherit; font-size: 16px;
+    color: var(--ink); background: var(--bubble); border: 1px solid var(--line); border-radius: 8px;
+  }
+  #list { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .empty { margin: auto; color: var(--sub); font-size: 14px; }
+  .msg { max-width: 85%; }
+  .meta { font-size: 12px; color: var(--sub); margin-bottom: 3px; display: flex; gap: 8px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .status.pending { color: var(--sub); }
+  .status.sent { color: #2e9d5b; }
+  .status.slow { color: #d68a1f; font-weight: 600; }
+  .status.fail { color: #d64545; font-weight: 600; }
+  .text { background: var(--bubble); padding: 9px 13px; border-radius: 4px 14px 14px 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  form { display: flex; gap: 8px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line); }
+  form input {
+    flex: 1; min-width: 0; padding: 11px 14px; font: inherit; font-size: 16px;
+    color: var(--ink); background: var(--bubble); border: 1px solid var(--line); border-radius: 10px;
+  }
+  form button {
+    padding: 0 20px; min-height: 44px; font: inherit; font-weight: 600; color: #fff; background: var(--accent);
+    border: 0; border-radius: 10px; cursor: pointer;
+  }
+  form button:disabled { opacity: .5; cursor: default; }
+  @media (max-width: 480px) {
+    .app { border: 0; }
+    .msg { max-width: 92%; }
+    header input { width: 110px; }
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>채팅</h1>
+    <input id="sender" placeholder="이름" maxlength="20" aria-label="발신자 이름">
+  </header>
+  <div id="list"><div class="empty" id="empty">불러오는 중…</div></div>
+  <form id="form">
+    <input id="input" placeholder="메시지를 입력하세요" autocomplete="off" aria-label="메시지">
+    <button id="send" type="submit">전송</button>
+  </form>
+</div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+  import {
+    initializeFirestore, collection, doc, setDoc, query, orderBy, documentId, onSnapshot
+  } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAnOYX-Ww6_4v2FWqTARysuGh52zJBbIYM",
+    authDomain: "chess-efd32.firebaseapp.com",
+    projectId: "chess-efd32",
+    storageBucket: "chess-efd32.firebasestorage.app",
+    messagingSenderId: "1065014619610",
+    appId: "1:1065014619610:web:eb56f10ca9629e5b3b24e3"
+  };
+
+  const PLATFORM = "web";
+  // 프록시·방화벽·광고차단 환경에서 연결이 조용히 멈추는 문제를 줄이기 위해 롱폴링 자동 감지
+  const db = initializeFirestore(initializeApp(firebaseConfig), {
+    experimentalAutoDetectLongPolling: true
+  });
+  const chatCol = collection(db, "chat");
+
+  const $list = document.getElementById("list");
+  const $empty = document.getElementById("empty");
+  const $sender = document.getElementById("sender");
+  const $input = document.getElementById("input");
+  const $send = document.getElementById("send");
+
+  $input.addEventListener("focus", () => setTimeout(() => { $list.scrollTop = $list.scrollHeight; }, 300));
+  $sender.value = localStorage.getItem("chat_sender") || "";
+  $sender.addEventListener("input", () => localStorage.setItem("chat_sender", $sender.value));
+
+  // 채팅 전송: 문서 ID = 유닉스 타임스탬프(ms)를 String으로
+  // 서버 응답을 기다리지 않고(await 없음) 입력창을 바로 비워 연속 전송이 가능하게 함
+  document.getElementById("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const message = $input.value.trim();
+    if (!message) return;
+    $input.value = "";
+    $input.focus();
+    const id = String(Date.now());
+    setTimeout(() => { if (statusById.get(id) === "pending") setStatus(id, "slow"); }, 8000);
+    setDoc(doc(chatCol, id), {
+      message,
+      platform: PLATFORM,
+      sender: $sender.value.trim() || "익명"
+    }).then(() => setStatus(id, "sent"))
+      .catch((err) => {
+        setStatus(id, "fail");
+        console.error(err);
+        alert("전송 실패: " + err.message);
+      });
+  });
+
+  // 내가 보낸 메시지의 전송 상태: pending(전송 중) → sent(서버 저장 완료) / fail(실패)
+  const statusById = new Map();   // id → 마지막 상태
+  const statusElById = new Map(); // id → 화면의 상태 표시 요소
+  const LABEL = { pending: "전송 중…", slow: "⚠ 서버 응답 없음 (F12 콘솔 확인)", sent: "✓ 전송됨", fail: "⚠ 전송 실패" };
+
+  function setStatus(id, state) {
+    statusById.set(id, state);
+    const el = statusElById.get(id);
+    if (!el) return;
+    el.className = "status " + state;
+    el.textContent = LABEL[state];
+  }
+
+  // 채팅 받기: 리스너 등록 후 ADDED일 때만 처리
+  // (타임스탬프 문자열은 자릿수가 같아 문서 ID 순 = 시간순)
+  const q = query(chatCol, orderBy(documentId()));
+  onSnapshot(q, (snapshot) => {
+    $empty.remove();
+    const nearBottom = $list.scrollHeight - $list.scrollTop - $list.clientHeight < 80;
+
+    snapshot.docChanges().forEach((change) => {
+      if (change.type !== "added") return;
+      addMessage(change.doc.id, change.doc.data(), change.doc.metadata.hasPendingWrites);
+    });
+
+    if (nearBottom || snapshot.docChanges().length > 1) $list.scrollTop = $list.scrollHeight;
+  }, (err) => {
+    $empty.textContent = "연결 오류: " + err.message;
+  });
+
+  function addMessage(id, data, pending) {
+    const ts = Number(id);
+    const time = isNaN(ts) ? "" :
+      new Date(ts).toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
+
+    const wrap = document.createElement("div");
+    wrap.className = "msg";
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const name = document.createElement("b");
+    name.textContent = data.sender ?? "";
+    const plat = document.createElement("span");
+    plat.textContent = data.platform ?? "";
+    const t = document.createElement("span");
+    t.textContent = time;
+    meta.append(name, plat, t);
+
+    // 내가 방금 보낸 메시지(서버 확인 전이거나 이미 결과가 나온 것)에만 상태 표시
+    if (pending || statusById.has(id)) {
+      const st = document.createElement("span");
+      meta.append(st);
+      statusElById.set(id, st);
+      setStatus(id, statusById.get(id) || "pending");
+    }
+
+    const text = document.createElement("div");
+    text.className = "text";
+    text.textContent = data.message ?? "";
+
+    wrap.append(meta, text);
+    $list.appendChild(wrap);
+  }
+</script>
+</body>
+</html>
